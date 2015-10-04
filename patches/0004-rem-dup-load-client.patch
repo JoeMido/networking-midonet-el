@@ -1,0 +1,237 @@
+commit efb143a160ec2c840fc3d91ab64a7e13d3dde8dd
+Author: Ryu Ishimoto <ryu@midokura.com>
+Date:   Tue Aug 11 06:02:01 2015 +0000
+
+    Remove duplicate code to load client
+    
+    Since both the core plugin, l3, lbaas and in the future, ML2 driver all
+    need to initialize the midonet client the same way, move the loading
+    method to a common module to avoid code duplication.
+    
+    Change-Id: Iea4d6fc607436e69ab9913639bfe688e42b67ab4
+    Partially-Implements: bp/midonet-ml2
+    Signed-off-by: Ryu Ishimoto <ryu@midokura.com>
+
+diff --git a/midonet/neutron/client/api.py b/midonet/neutron/client/api.py
+index 97c1c41..83c0b88 100644
+--- a/midonet/neutron/client/api.py
++++ b/midonet/neutron/client/api.py
+@@ -14,16 +14,13 @@
+ #    under the License.
+ 
+ from midonet.neutron.client import base
+-from midonet.neutron.common import config  # noqa
+-from midonetclient import client
+ 
+-from oslo_config import cfg
++from midonetclient import client
+ 
+ 
+ class MidonetApiClient(base.MidonetClientBase):
+ 
+-    def __init__(self):
+-        conf = cfg.CONF.MIDONET
++    def __init__(self, conf):
+         self.api_cli = client.MidonetClient(conf.midonet_uri, conf.username,
+                                             conf.password,
+                                             project_id=conf.project_id)
+@@ -129,4 +126,4 @@ class MidonetApiClient(base.MidonetClientBase):
+         self.api_cli.update_health_monitor(health_monitor_id, health_monitor)
+ 
+     def delete_health_monitor(self, context, health_monitor_id):
+-        self.api_cli.delete_health_monitor(health_monitor_id)
+\ No newline at end of file
++        self.api_cli.delete_health_monitor(health_monitor_id)
+diff --git a/midonet/neutron/client/base.py b/midonet/neutron/client/base.py
+index 22ae160..05ad1b6 100644
+--- a/midonet/neutron/client/base.py
++++ b/midonet/neutron/client/base.py
+@@ -16,6 +16,26 @@
+ import abc
+ import six
+ 
++from neutron import i18n
++
++from oslo_log import log as logging
++from oslo_utils import excutils
++from oslo_utils import importutils
++
++_LE = i18n._LE
++LOG = logging.getLogger(__name__)
++
++
++def load_client(conf):
++    try:
++        client = importutils.import_object(conf.client, conf)
++        LOG.debug("Loaded midonet client '%(client)s'", {'client': client})
++        return client
++    except ImportError:
++        with excutils.save_and_reraise_exception():
++            LOG.exception(_LE("Error loading midonet client '%(client)s'"),
++                          {'client': conf.client})
++
+ 
+ @six.add_metaclass(abc.ABCMeta)
+ class MidonetClientBase(object):
+diff --git a/midonet/neutron/client/cluster.py b/midonet/neutron/client/cluster.py
+index 6b4cc97..c0b536c 100644
+--- a/midonet/neutron/client/cluster.py
++++ b/midonet/neutron/client/cluster.py
+@@ -14,19 +14,19 @@
+ #    under the License.
+ 
+ from midonet.neutron.client import base
+-from midonet.neutron.common import config  # noqa
+ from midonet.neutron.db import task_db as task
+ from midonet.neutron.rpc import topology_client as top
+ 
+ import neutron.db.api as db
+ 
+-from oslo_config import cfg
+-
+ 
+ class MidonetClusterClient(base.MidonetClientBase):
+ 
++    def __init__(self, conf):
++        self.conf = conf
++
+     def initialize(self):
+-        task.create_config_task(db.get_session(), dict(cfg.CONF.MIDONET))
++        task.create_config_task(db.get_session(), dict(self.conf))
+ 
+     def create_network_precommit(self, context, network):
+         task.create_task(context, task.CREATE, data_type=task.NETWORK,
+@@ -124,7 +124,7 @@ class MidonetClusterClient(base.MidonetClientBase):
+ 
+     def _midonet_hosts(self):
+         for mido_host in top.get_all_midonet_hosts(
+-                cfg.CONF.MIDONET.cluster_ip, cfg.CONF.MIDONET.cluster_port):
++                self.conf.cluster_ip, self.conf.cluster_port):
+             yield mido_host
+ 
+     def get_agent(self, agent_id):
+@@ -188,4 +188,4 @@ class MidonetClusterClient(base.MidonetClientBase):
+ 
+     def delete_health_monitor(self, context, health_monitor_id):
+         task.create_task(context, task.DELETE, data_type=task.HEALTH_MONITOR,
+-                         resource_id=health_monitor_id)
+\ No newline at end of file
++                         resource_id=health_monitor_id)
+diff --git a/midonet/neutron/plugin.py b/midonet/neutron/plugin.py
+index da2b113..3334080 100644
+--- a/midonet/neutron/plugin.py
++++ b/midonet/neutron/plugin.py
+@@ -13,6 +13,7 @@
+ #    License for the specific language governing permissions and limitations
+ #    under the License.
+ 
++from midonet.neutron.client import base as c_base
+ from midonet.neutron.common import config  # noqa
+ from midonet.neutron import extensions
+ 
+@@ -59,7 +60,7 @@ class MidonetMixinBase(db_base_plugin_v2.NeutronDbPluginV2,
+         super(MidonetMixinBase, self).__init__()
+ 
+         # Instantiate MidoNet API client
+-        self._load_client()
++        self.client = c_base.load_client(cfg.CONF.MIDONET)
+ 
+         neutron_extensions.append_api_extensions_path(extensions.__path__)
+         self.setup_rpc()
+@@ -75,16 +76,6 @@ class MidonetMixinBase(db_base_plugin_v2.NeutronDbPluginV2,
+             cfg.CONF.network_scheduler_driver
+         )
+ 
+-    def _load_client(self):
+-        try:
+-            self.client = importutils.import_object(cfg.CONF.MIDONET.client)
+-            LOG.debug("Loaded midonet client '%(client)s'",
+-                      {'client': self.client})
+-        except ImportError:
+-            with excutils.save_and_reraise_exception():
+-                LOG.exception(_LE("Error loading midonet client '%(client)s'"),
+-                              {'client': self.client})
+-
+     def setup_rpc(self):
+         # RPC support
+         self.topic = topics.PLUGIN
+diff --git a/midonet/neutron/services/l3/l3_midonet.py b/midonet/neutron/services/l3/l3_midonet.py
+index 5d3ee21..f393121 100644
+--- a/midonet/neutron/services/l3/l3_midonet.py
++++ b/midonet/neutron/services/l3/l3_midonet.py
+@@ -13,6 +13,7 @@
+ #    License for the specific language governing permissions and limitations
+ #    under the License.
+ 
++from midonet.neutron.client import base as c_base
+ from midonet.neutron.common import config  # noqa
+ from midonet.neutron import extensions
+ 
+@@ -27,8 +28,6 @@ from oslo_config import cfg
+ from oslo_log import helpers as log_helpers
+ from oslo_log import log as logging
+ from oslo_utils import excutils
+-from oslo_utils import importutils
+-
+ 
+ LOG = logging.getLogger(__name__)
+ _LE = i18n._LE
+@@ -49,20 +48,10 @@ class MidonetL3ServicePlugin(db_base_plugin_v2.NeutronDbPluginV2,
+         super(MidonetL3ServicePlugin, self).__init__()
+ 
+         # Instantiate MidoNet API client
+-        self._load_client()
++        self.client = c_base.load_client(cfg.CONF.MIDONET)
+ 
+         neutron_extensions.append_api_extensions_path(extensions.__path__)
+ 
+-    def _load_client(self):
+-        try:
+-            self.client = importutils.import_object(cfg.CONF.MIDONET.client)
+-            LOG.debug("Loaded midonet client '%(client)s'",
+-                      {'client': self.client})
+-        except ImportError:
+-            with excutils.save_and_reraise_exception():
+-                LOG.exception(_LE("Error loading midonet client '%(client)s'"),
+-                              {'client': self.client})
+-
+     def get_plugin_type(self):
+         return constants.L3_ROUTER_NAT
+ 
+diff --git a/midonet/neutron/services/loadbalancer/driver.py b/midonet/neutron/services/loadbalancer/driver.py
+index 62c7eb5..f6f4279 100644
+--- a/midonet/neutron/services/loadbalancer/driver.py
++++ b/midonet/neutron/services/loadbalancer/driver.py
+@@ -13,6 +13,7 @@
+ #    License for the specific language governing permissions and limitations
+ #    under the License.
+ 
++from midonet.neutron.client import base as c_base
+ from midonet.neutron.db import loadbalancer_db as mn_lb_db
+ 
+ from neutron.common import exceptions as n_exc
+@@ -21,6 +22,7 @@ from neutron.plugins.common import constants
+ from neutron_lbaas.db.loadbalancer import loadbalancer_db as ldb
+ from neutron_lbaas.services.loadbalancer.drivers import abstract_driver
+ 
++from oslo_config import cfg
+ from oslo_log import log as logging
+ from oslo_utils import excutils
+ 
+@@ -33,15 +35,12 @@ class MidonetLoadbalancerDriver(abstract_driver.LoadBalancerAbstractDriver,
+ 
+     def __init__(self, plugin):
+         self.plugin = plugin
++        self.client = c_base.load_client(cfg.CONF.MIDONET)
+ 
+     @property
+     def core_plugin(self):
+         return self.plugin._core_plugin
+ 
+-    @property
+-    def client(self):
+-        return self.core_plugin.client
+-
+     def create_vip(self, context, vip):
+         LOG.debug("MidonetLoadbalancerDriver.create_vip called: %(vip)r",
+                   {'vip': vip})

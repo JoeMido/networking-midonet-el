@@ -1,0 +1,407 @@
+commit 633d3441004b39e5ac8c8166e850242839b15239
+Author: Joe Mills <joe@midokura.com>
+Date:   Tue Aug 4 03:46:26 2015 +0000
+
+    Add Midonet ML2 Mechanism/Type Driver
+    
+    Add a mechanism and type drivers that implement midonet API calls and
+    are configurable with the ML2 plugin.
+    
+    Summary of changes:
+    
+     * New ML2 type driver for midonet
+     * New ML2 mechanism driver for midonet
+     * New ML2 SG callback handler for midonet
+     * Devstack configurations to set up ML2 with midonet drivers
+     * Entry points for the midonet ML2 drivers
+     * local.conf sample files both midonet and ml2 plugins
+     * README update for ML2
+    
+    Partially Implements: bp/midonet-ml2
+    Signed-off-by: Joe Mills <joe@midokura.com>
+    Co-Authored-By: Ryu Ishimoto <ryu@midokura.com>
+    
+    Change-Id: I0b0ce33edb108131e71f7a3307660810b55dbcf4
+    
+    Conflicts:
+    	devstack/midonet/local.conf.sample
+
+diff --git a/midonet/neutron/common/constants.py b/midonet/neutron/common/constants.py
+index 153623f..df34fe8 100644
+--- a/midonet/neutron/common/constants.py
++++ b/midonet/neutron/common/constants.py
+@@ -15,3 +15,6 @@
+ 
+ # Network Type constants
+ TYPE_UPLINK = 'uplink'
++
++# ML2 Midonet type driver name
++TYPE_MIDONET = 'midonet'
+diff --git a/midonet/neutron/ml2/mech_driver.py b/midonet/neutron/ml2/mech_driver.py
+index b0e7386..5dc0e80 100644
+--- a/midonet/neutron/ml2/mech_driver.py
++++ b/midonet/neutron/ml2/mech_driver.py
+@@ -13,11 +13,22 @@
+ #    License for the specific language governing permissions and limitations
+ #    under the License.
+ 
+-from oslo_log import helpers as log_helpers
+-from oslo_log import log as logging
++from neutron.common import constants
++
++from midonet.neutron.client import base as c_base
++from midonet.neutron.common import config  # noqa
++from midonet.neutron.ml2 import sg_callback
+ 
++from neutron.common import constants as n_const
++from neutron.common import exceptions as n_exc
++from neutron.extensions import portbindings
++from neutron import i18n
+ from neutron.plugins.ml2 import driver_api as api
++from oslo_config import cfg
++from oslo_log import helpers as log_helpers
++from oslo_log import log as logging
+ 
++_LE = i18n._LE
+ LOG = logging.getLogger(__name__)
+ 
+ 
+@@ -25,82 +36,120 @@ class MidonetMechanismDriver(api.MechanismDriver):
+ 
+     """ML2 Mechanism Driver for Midonet."""
+ 
+-    @log_helpers.log_method_call
++    def __init__(self):
++        self.vif_type = portbindings.VIF_TYPE_MIDONET
++        self.supported_vnic_types = [portbindings.VNIC_NORMAL]
++        self.vif_details = {portbindings.CAP_PORT_FILTER: True}
++
++        self.client = c_base.load_client(cfg.CONF.MIDONET)
++        self.client.initialize()
++
+     def initialize(self):
+-        pass
++        self.sec_handler = sg_callback.MidonetSecurityGroupsHandler(
++            self.client)
+ 
+     @log_helpers.log_method_call
+     def create_network_precommit(self, context):
+-        pass
++        network = context.current
++        self.client.create_network_precommit(context, network)
+ 
+     @log_helpers.log_method_call
+     def create_network_postcommit(self, context):
+-        pass
++        network = context.current
++        self.client.create_network_postcommit(network)
+ 
+     @log_helpers.log_method_call
+     def update_network_precommit(self, context):
+-        pass
++        net = context.current
++        self.client.update_network_precommit(context, net['id'], net)
+ 
+     @log_helpers.log_method_call
+     def update_network_postcommit(self, context):
+-        pass
++        net = context.current
++        self.client.update_network_postcommit(net['id'], net)
+ 
+     @log_helpers.log_method_call
+     def delete_network_precommit(self, context):
+-        pass
++        network_id = context.current['id']
++        self.client.delete_network_precommit(context, network_id)
+ 
+     @log_helpers.log_method_call
+     def delete_network_postcommit(self, context):
+-        pass
++        network_id = context.current['id']
++        self.client.delete_network_postcommit(network_id)
+ 
+     @log_helpers.log_method_call
+     def create_subnet_precommit(self, context):
+-        pass
++        subnet = context.current
++        self.client.create_subnet_precommit(context, subnet)
+ 
+     @log_helpers.log_method_call
+     def create_subnet_postcommit(self, context):
+-        pass
++        subnet = context.current
++        self.client.create_subnet_postcommit(subnet)
+ 
+     @log_helpers.log_method_call
+     def update_subnet_precommit(self, context):
+-        pass
++        subnet = context.current
++        self.client.update_subnet_precommit(context, subnet['id'], subnet)
+ 
+     @log_helpers.log_method_call
+     def update_subnet_postcommit(self, context):
+-        pass
++        subnet = context.current
++        self.client.update_subnet_postcommit(subnet['id'], subnet)
+ 
+     @log_helpers.log_method_call
+     def delete_subnet_precommit(self, context):
+-        pass
++        subnet_id = context.current['id']
++        self.client.delete_subnet_precommit(context, subnet_id)
+ 
+     @log_helpers.log_method_call
+     def delete_subnet_postcommit(self, context):
+-        pass
++        subnet_id = context.current['id']
++        self.client.delete_subnet_postcommit(subnet_id)
+ 
+     @log_helpers.log_method_call
+     def create_port_precommit(self, context):
+-        pass
++        port = context.current
++        self.client.create_port_precommit(context, port)
++
++    def _validate_port_create(self, port):
++        if (port.get('device_owner') == n_const.DEVICE_OWNER_ROUTER_GW
++            and not port['fixed_ips']):
++            msg = (_("No IPs assigned to the gateway port for"
++                     " router %s") % port['device_id'])
++            raise n_exc.BadRequest(resource='router', msg=msg)
+ 
+     @log_helpers.log_method_call
+     def create_port_postcommit(self, context):
+-        pass
++        port = context.current
++        self._validate_port_create(port)
++        self.client.create_port_postcommit(port)
+ 
+     @log_helpers.log_method_call
+     def update_port_precommit(self, context):
+-        pass
++        port = context.current
++        self.client.update_port_precommit(context, port['id'], port)
+ 
+     @log_helpers.log_method_call
+     def update_port_postcommit(self, context):
+-        pass
++        port = context.current
++        self.client.update_port_postcommit(port['id'], port)
+ 
+     @log_helpers.log_method_call
+     def delete_port_precommit(self, context):
+-        pass
++        port_id = context.current['id']
++        self.client.delete_port_precommit(context, port_id)
+ 
+     @log_helpers.log_method_call
+     def delete_port_postcommit(self, context):
+-        pass
++        port_id = context.current['id']
++        self.client.delete_port_postcommit(port_id)
+ 
+     @log_helpers.log_method_call
+     def bind_port(self, context):
+-        pass
++        for segment in context.segments_to_bind:
++            context.set_binding(segment[api.ID],
++                                self.vif_type,
++                                self.vif_details,
++                                constants.PORT_STATUS_ACTIVE)
+diff --git a/midonet/neutron/ml2/sg_callback.py b/midonet/neutron/ml2/sg_callback.py
+new file mode 100644
+index 0000000..42cda68
+--- /dev/null
++++ b/midonet/neutron/ml2/sg_callback.py
+@@ -0,0 +1,109 @@
++# Copyright (C) 2015 Midokura SARL.
++# All Rights Reserved.
++#
++#    Licensed under the Apache License, Version 2.0 (the "License"); you may
++#    not use this file except in compliance with the License. You may obtain
++#    a copy of the License at
++#
++#         http://www.apache.org/licenses/LICENSE-2.0
++#
++#    Unless required by applicable law or agreed to in writing, software
++#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
++#    License for the specific language governing permissions and limitations
++#    under the License.
++
++from neutron.callbacks import events
++from neutron.callbacks import registry
++from neutron.callbacks import resources
++from neutron import i18n
++
++from oslo_log import helpers as log_helpers
++from oslo_log import log as logging
++from oslo_utils import excutils
++
++_LE = i18n._LE
++LOG = logging.getLogger(__name__)
++
++
++class MidonetSecurityGroupsHandler(object):
++
++    def __init__(self, client):
++        self.client = client
++        self.subscribe()
++
++    @log_helpers.log_method_call
++    def create_security_group(self, resource, event, trigger, **kwargs):
++        sg = kwargs.get('security_group')
++        try:
++            self.client.create_security_group_postcommit(sg)
++        except Exception as ex:
++            with excutils.save_and_reraise_exception():
++                LOG.error(_LE("Failed to create a security group %(sg_id)s "
++                              "in Midonet: %(err)s"),
++                          {"sg_id": sg["id"], "err": ex})
++                try:
++                    self.client.delete_security_group_postcommit(sg["id"])
++                except Exception:
++                    LOG.exception(_LE("Failed to delete security group %s"),
++                                  sg['id'])
++
++    @log_helpers.log_method_call
++    def update_security_group(self, resource, event, trigger, **kwargs):
++        pass
++
++    @log_helpers.log_method_call
++    def delete_security_group(self, resource, event, trigger, **kwargs):
++        sg_id = kwargs.get('security_group_id')
++        try:
++            self.client.delete_security_group_postcommit(sg_id)
++        except Exception as ex:
++            LOG.error(_LE("Failed to a delete security group %(sg_id)s "
++                          "in Midonet: %(err)s"),
++                      {"sg_id": sg_id, "err": ex})
++
++    @log_helpers.log_method_call
++    def create_security_group_rule(self, resource, event, trigger, **kwargs):
++        sgr = kwargs.get('security_group_rule')
++        try:
++            self.client.create_security_group_rule_postcommit(sgr)
++        except Exception as ex:
++            with excutils.save_and_reraise_exception():
++                LOG.error(_LE("Failed to create a security group rule "
++                              "%(sgr_id)s in Midonet: %(err)s"),
++                          {"sgr_id": sgr["id"], "err": ex})
++                try:
++                    self.client.delete_security_group_rule_postcommit(
++                        sgr["id"])
++                except Exception:
++                    LOG.exception(_LE("Failed to delete security group "
++                                      " rule %s"),
++                                  sgr['id'])
++
++    @log_helpers.log_method_call
++    def delete_security_group_rule(self, resource, event, trigger, **kwargs):
++        sgr_id = kwargs.get('security_group_rule_id')
++        try:
++            self.client.delete_security_group_rule_postcommit(sgr_id)
++        except Exception as ex:
++            with excutils.save_and_reraise_exception():
++                LOG.error(_LE("Failed to delete a security group %(sgr_id)s "
++                              "in Midonet: %(err)s"),
++                          {"sgr_id": sgr_id, "err": ex})
++
++    def subscribe(self):
++        registry.subscribe(
++            self.create_security_group, resources.SECURITY_GROUP,
++            events.AFTER_CREATE)
++        registry.subscribe(
++            self.update_security_group, resources.SECURITY_GROUP,
++            events.AFTER_UPDATE)
++        registry.subscribe(
++            self.delete_security_group, resources.SECURITY_GROUP,
++            events.AFTER_DELETE)
++        registry.subscribe(
++            self.create_security_group_rule, resources.SECURITY_GROUP_RULE,
++            events.AFTER_CREATE)
++        registry.subscribe(
++            self.delete_security_group_rule, resources.SECURITY_GROUP_RULE,
++            events.AFTER_DELETE)
+diff --git a/midonet/neutron/ml2/type_driver.py b/midonet/neutron/ml2/type_driver.py
+new file mode 100644
+index 0000000..e02f2c8
+--- /dev/null
++++ b/midonet/neutron/ml2/type_driver.py
+@@ -0,0 +1,61 @@
++# Copyright (c) 2015 Midokura SARL
++# All Rights Reserved.
++#
++#    Licensed under the Apache License, Version 2.0 (the "License"); you may
++#    not use this file except in compliance with the License. You may obtain
++#    a copy of the License at
++#
++#         http://www.apache.org/licenses/LICENSE-2.0
++#
++#    Unless required by applicable law or agreed to in writing, software
++#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
++#    License for the specific language governing permissions and limitations
++#    under the License.
++
++from oslo_log import log
++import six
++
++from midonet.neutron.common import constants as const
++from neutron.common import exceptions as exc
++from neutron.i18n import _LI
++from neutron.plugins.ml2 import driver_api as api
++
++LOG = log.getLogger(__name__)
++
++
++class MidonetTypeDriver(api.TypeDriver):
++    """Type driver for Midonet networks
++
++    This type driver differentiates midonet networks from other types.
++    """
++
++    def __init__(self):
++        LOG.info(_LI("ML2 MidonetTypeDriver initialization complete"))
++
++    def initialize(self):
++        pass
++
++    def get_type(self):
++        return const.TYPE_MIDONET
++
++    def is_partial_segment(self, segment):
++        return False
++
++    def validate_provider_segment(self, segment):
++        for key, value in six.iteritems(segment):
++            if value and key != api.NETWORK_TYPE:
++                msg = _("%s prohibited for midonet provider network") % key
++                raise exc.InvalidInput(error_message=msg)
++
++    def reserve_provider_segment(self, session, segment):
++        return segment
++
++    def allocate_tenant_segment(self, session):
++        return {api.NETWORK_TYPE: const.TYPE_MIDONET}
++
++    def release_segment(self, session, segment):
++        pass
++
++    def get_mtu(self, physical):
++        pass
+diff --git a/setup.cfg b/setup.cfg
+index 7863ae7..d264bec 100644
+--- a/setup.cfg
++++ b/setup.cfg
+@@ -49,6 +49,10 @@ output_file = networking-midonet/locale/networking-midonet.pot
+ [entry_points]
+ console_scripts = 
+ 	midonet-db-manage = midonet.neutron.db.migration.cli:main
++neutron.ml2.mechanism_drivers = 
++	midonet = midonet.neutron.ml2.mech_driver:MidonetMechanismDriver
++neutron.ml2.type_drivers = 
++	midonet = midonet.neutron.ml2.type_driver:MidonetTypeDriver
+ 
+ [egg_info]
+ tag_build = 

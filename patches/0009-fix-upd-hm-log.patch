@@ -1,0 +1,24 @@
+commit 9c9532aaaed6ba2fd6517169b8ba7fa301c26765
+Author: Sergey Vilgelm <sergey@vilgelm.info>
+Date:   Mon Sep 14 11:02:26 2015 +0300
+
+    Fix missing value types for log message
+    
+    This patch add missing value types for some log message of exception.
+    
+    Change-Id: Id7556e3ad04e0c8d593690f5d70bf4606bd3047a
+    Closes-Bug: #1494574
+
+diff --git a/midonet/neutron/services/loadbalancer/driver.py b/midonet/neutron/services/loadbalancer/driver.py
+index f6f4279..db321d5 100644
+--- a/midonet/neutron/services/loadbalancer/driver.py
++++ b/midonet/neutron/services/loadbalancer/driver.py
+@@ -230,7 +230,7 @@ class MidonetLoadbalancerDriver(abstract_driver.LoadBalancerAbstractDriver,
+                                    health_monitor, pool_id):
+         LOG.debug("MidonetLoadbalancerDriver.update_pool_health_monitor "
+                   "called: old_health_monitor=%(old_health_monitor)r, "
+-                  "health_monitor=%(health_monitor)r, pool_id=%(pool_id)",
++                  "health_monitor=%(health_monitor)r, pool_id=%(pool_id)r",
+                   {'old_health_monitor': old_health_monitor,
+                    'health_monitor': health_monitor, 'pool_id': pool_id})
+ 

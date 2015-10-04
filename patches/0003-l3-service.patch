@@ -1,0 +1,487 @@
+commit e029d8e6290f12136327f6d04badcc080bc0d653
+Author: Joe Mills <joe@midokura.com>
+Date:   Thu Jul 30 14:59:07 2015 +0900
+
+    Move the router and fip handlers to l3 service
+    
+    This patch creates an L3 plugin service for midonet and moves
+    the handlers for router and fip operations to the new service.
+    
+    This has the following implications:
+    * If plugin_v2 is being used, then in order to get L3 functionality,
+      you must also configure the l3 plugin as a "service_plugin".
+    * If plugin (v1) is being used, then you must not configure
+      "service_plugin" with the l3 plugin. They both implement the "router"
+      extension and therefore can not both be loaded at the same time.
+    
+    Changes:
+    plugin_v2.py: Remove router and fip functionality
+    plugin.py: l3 nat mixin is removed from the base and moved to the mixin
+    l3_midonet.py: Add router and fip functionality
+    test_midonet_plugin_v2.py: configure the service_plugin
+    local.conf.sample: add configuration options to stack with the l3 service
+    loadbalancer_db.py: use the l3 plugin instead of the core plugin when
+      accessing the router objects
+    
+    Partially Implements:
+    https://blueprints.launchpad.net/networking-midonet/+spec/midonet-ml2
+    Signed-off-by: Joe Mills <joe@midokura.com>
+    
+    Change-Id: Ic87c1efd34835fabebc2b98837c19b097d48dc0e
+
+diff --git a/midonet/neutron/db/loadbalancer_db.py b/midonet/neutron/db/loadbalancer_db.py
+index 470acbb..0ea3ade 100644
+--- a/midonet/neutron/db/loadbalancer_db.py
++++ b/midonet/neutron/db/loadbalancer_db.py
+@@ -18,6 +18,8 @@ from neutron.common import exceptions as n_exc
+ from neutron.db import l3_db
+ from neutron.db import models_v2
+ from neutron import i18n
++from neutron import manager
++from neutron.plugins.common import constants as service_constants
+ from sqlalchemy.orm import exc
+ 
+ _LE = i18n._LE
+@@ -100,7 +102,9 @@ class LoadBalancerDriverDbMixin(object):
+         # when we created the pool
+         assert router_id is not None
+ 
+-        router = self.core_plugin._get_router(context, router_id)
++        l3plugin = manager.NeutronManager.get_service_plugins().get(
++            service_constants.L3_ROUTER_NAT)
++        router = l3plugin._get_router(context, router_id)
+         if router.get('gw_port_id') is None:
+             msg = (_LE("The router must have its gateway set if the "
+                        "VIP subnet is external"))
+diff --git a/midonet/neutron/plugin.py b/midonet/neutron/plugin.py
+index 74f4d8d..da2b113 100644
+--- a/midonet/neutron/plugin.py
++++ b/midonet/neutron/plugin.py
+@@ -52,7 +52,6 @@ class MidonetMixinBase(db_base_plugin_v2.NeutronDbPluginV2,
+                        agentschedulers_db.DhcpAgentSchedulerDbMixin,
+                        external_net_db.External_net_db_mixin,
+                        extradhcpopt_db.ExtraDhcpOptMixin,
+-                       l3_gwmode_db.L3_NAT_db_mixin,
+                        portbindings_db.PortBindingMixin,
+                        securitygroups_db.SecurityGroupDbMixin):
+ 
+@@ -99,7 +98,8 @@ class MidonetMixinBase(db_base_plugin_v2.NeutronDbPluginV2,
+         self.conn.consume_in_threads()
+ 
+ 
+-class MidonetMixin(MidonetMixinBase):
++class MidonetMixin(MidonetMixinBase,
++                   l3_gwmode_db.L3_NAT_db_mixin):
+ 
+     supported_extension_aliases = ['extra_dhcp_opt']
+ 
+diff --git a/midonet/neutron/plugin_v2.py b/midonet/neutron/plugin_v2.py
+index eee4cef..18936f0 100644
+--- a/midonet/neutron/plugin_v2.py
++++ b/midonet/neutron/plugin_v2.py
+@@ -20,7 +20,6 @@ from midonet.neutron import plugin
+ from neutron.common import constants as n_const
+ from neutron.common import exceptions as n_exc
+ from neutron.db import allowedaddresspairs_db as addr_pair_db
+-from neutron.db import extraroute_db
+ from neutron.db import portsecurity_db as ps_db
+ from neutron.extensions import allowedaddresspairs as addr_pair
+ from neutron.extensions import extra_dhcp_opt as edo_ext
+@@ -28,6 +27,8 @@ from neutron.extensions import portsecurity as psec
+ from neutron.extensions import providernet as pnet
+ from neutron.extensions import securitygroup as ext_sg
+ from neutron import i18n
++from neutron import manager
++from neutron.plugins.common import constants as service_constants
+ from oslo_db import api as oslo_db_api
+ from oslo_db import exception as oslo_db_exc
+ from oslo_log import log as logging
+@@ -42,7 +43,6 @@ _LW = i18n._LW
+ class MidonetPluginV2(plugin.MidonetMixinBase,
+                       addr_pair_db.AllowedAddressPairsMixin,
+                       am_db.AgentMembershipDbMixin,
+-                      extraroute_db.ExtraRoute_db_mixin,
+                       pnet_db.MidonetProviderNetworkMixin,
+                       pb_db.MidonetPortBindingMixin,
+                       ps_db.PortSecurityDbMixin):
+@@ -55,11 +55,9 @@ class MidonetPluginV2(plugin.MidonetMixinBase,
+         'dhcp_agent_scheduler',
+         'external-net',
+         'extra_dhcp_opt',
+-        'extraroute',
+         'port-security',
+         'provider',
+         'quotas',
+-        'router',
+         'security-group'
+     ]
+ 
+@@ -306,14 +304,18 @@ class MidonetPluginV2(plugin.MidonetMixinBase,
+                   "l3_port_check=%(l3_port_check)r",
+                   {'id': id, 'l3_port_check': l3_port_check})
+ 
++        l3plugin = manager.NeutronManager.get_service_plugins().get(
++            service_constants.L3_ROUTER_NAT)
++
+         # if needed, check to see if this is a port owned by
+         # and l3-router.  If so, we should prevent deletion.
+-        if l3_port_check:
+-            self.prevent_l3_port_deletion(context, id)
++        if l3_port_check and l3plugin:
++            l3plugin.prevent_l3_port_deletion(context, id)
+ 
+         with context.session.begin(subtransactions=True):
+-            super(MidonetPluginV2, self).disassociate_floatingips(
+-                context, id, do_notify=False)
++            if l3plugin:
++                l3plugin.disassociate_floatingips(context, id,
++                                                  do_notify=False)
+             super(MidonetPluginV2, self).delete_port(context, id)
+             self.client.delete_port_precommit(context, id)
+ 
+@@ -364,152 +366,6 @@ class MidonetPluginV2(plugin.MidonetMixinBase,
+         LOG.debug("MidonetPluginV2.update_port exiting: p=%r", p)
+         return p
+ 
+-    def create_router(self, context, router):
+-        LOG.debug("MidonetPluginV2.create_router called: router=%(router)s",
+-                  {"router": router})
+-
+-        with context.session.begin(subtransactions=True):
+-            r = super(MidonetPluginV2, self).create_router(context, router)
+-            self.client.create_router_precommit(context, r)
+-
+-        try:
+-            self.client.create_router_postcommit(r)
+-        except Exception as ex:
+-            with excutils.save_and_reraise_exception():
+-                LOG.error(_LE("Failed to create a router %(r_id)s in Midonet:"
+-                              "%(err)s"), {"r_id": r["id"], "err": ex})
+-                try:
+-                    self.delete_router(context, r['id'])
+-                except Exception:
+-                    LOG.exception(_LE("Failed to delete a router %s"), r["id"])
+-
+-        LOG.debug("MidonetPluginV2.create_router exiting: router=%(router)s.",
+-                  {"router": r})
+-        return r
+-
+-    def update_router(self, context, id, router):
+-        LOG.debug("MidonetPluginV2.update_router called: id=%(id)s "
+-                  "router=%(router)r", {"id": id, "router": router})
+-
+-        with context.session.begin(subtransactions=True):
+-            r = super(MidonetPluginV2, self).update_router(context, id, router)
+-            self.client.update_router_precommit(context, id, r)
+-
+-        self.client.update_router_postcommit(id, r)
+-
+-        LOG.debug("MidonetPluginV2.update_router exiting: router=%r", r)
+-        return r
+-
+-    def delete_router(self, context, id):
+-        LOG.debug("MidonetPluginV2.delete_router called: id=%s", id)
+-
+-        with context.session.begin(subtransactions=True):
+-            super(MidonetPluginV2, self).delete_router(context, id)
+-            self.client.delete_router_precommit(context, id)
+-
+-        self.client.delete_router_postcommit(id)
+-
+-        LOG.debug("MidonetPluginV2.delete_router exiting: id=%s", id)
+-
+-    def add_router_interface(self, context, router_id, interface_info):
+-        LOG.debug("MidonetPluginV2.add_router_interface called: "
+-                  "router_id=%(router_id)s, interface_info=%(interface_info)r",
+-                  {'router_id': router_id, 'interface_info': interface_info})
+-
+-        with context.session.begin(subtransactions=True):
+-            info = super(MidonetPluginV2, self).add_router_interface(
+-                context, router_id, interface_info)
+-            self.client.add_router_interface_precommit(context, router_id,
+-                                                       info)
+-
+-        try:
+-            self.client.add_router_interface_postcommit(router_id, info)
+-        except Exception as ex:
+-            LOG.error(_LE("Failed to create MidoNet resources to add router "
+-                          "interface. info=%(info)s, router_id=%(router_id)s, "
+-                          "error=%(err)r"),
+-                      {"info": info, "router_id": router_id, "err": ex})
+-            with excutils.save_and_reraise_exception():
+-                self.remove_router_interface(context, router_id, info)
+-
+-        LOG.debug("MidonetPluginV2.add_router_interface exiting: info=%r",
+-                  info)
+-        return info
+-
+-    def remove_router_interface(self, context, router_id, interface_info):
+-        LOG.debug("MidonetPluginV2.remove_router_interface called: "
+-                  "router_id=%(router_id)s, interface_info=%(interface_info)r",
+-                  {'router_id': router_id, 'interface_info': interface_info})
+-
+-        with context.session.begin(subtransactions=True):
+-            info = super(MidonetPluginV2, self).remove_router_interface(
+-                context, router_id, interface_info)
+-            self.client.remove_router_interface_precommit(context, router_id,
+-                                                          info)
+-
+-        self.client.remove_router_interface_postcommit(router_id, info)
+-
+-        LOG.debug("MidonetPluginV2.remove_router_interface exiting: info=%r",
+-                  info)
+-        return info
+-
+-    def create_floatingip(self, context, floatingip):
+-        LOG.debug("MidonetPluginV2.create_floatingip called: ip=%r",
+-                  floatingip)
+-
+-        with context.session.begin(subtransactions=True):
+-            fip = super(MidonetPluginV2, self).create_floatingip(context,
+-                                                              floatingip)
+-            self.client.create_floatingip_precommit(context, fip)
+-
+-        try:
+-            self.client.create_floatingip_postcommit(fip)
+-        except Exception as ex:
+-            with excutils.save_and_reraise_exception():
+-                LOG.error(_LE("Failed to create floating ip %(fip)s: %(err)s"),
+-                          {"fip": fip, "err": ex})
+-                try:
+-                    self.delete_floatingip(context, fip['id'])
+-                except Exception:
+-                    LOG.exception(_LE("Failed to delete a floating ip %s"),
+-                                  fip['id'])
+-
+-        LOG.debug("MidonetPluginV2.create_floatingip exiting: fip=%r", fip)
+-        return fip
+-
+-    def delete_floatingip(self, context, id):
+-        LOG.debug("MidonetPluginV2.delete_floatingip called: id=%s", id)
+-
+-        with context.session.begin(subtransactions=True):
+-            super(MidonetPluginV2, self).delete_floatingip(context, id)
+-            self.client.delete_floatingip_precommit(context, id)
+-
+-        self.client.delete_floatingip_postcommit(id)
+-
+-        LOG.debug("MidonetPluginV2.delete_floatingip exiting: id=%r", id)
+-
+-    def update_floatingip(self, context, id, floatingip):
+-        LOG.debug("MidonetPluginV2.update_floatingip called: id=%(id)s "
+-                  "floatingip=%(floatingip)s ",
+-                  {'id': id, 'floatingip': floatingip})
+-
+-        with context.session.begin(subtransactions=True):
+-            fip = super(MidonetPluginV2, self).update_floatingip(context, id,
+-                                                              floatingip)
+-            self.client.update_floatingip_precommit(context, id, fip)
+-
+-            # Update status based on association
+-            if fip.get('port_id') is None:
+-                fip['status'] = n_const.FLOATINGIP_STATUS_DOWN
+-            else:
+-                fip['status'] = n_const.FLOATINGIP_STATUS_ACTIVE
+-            self.update_floatingip_status(context, id, fip['status'])
+-
+-        self.client.update_floatingip_postcommit(id, fip)
+-
+-        LOG.debug("MidonetPluginV2.update_floating_ip exiting: fip=%s", fip)
+-        return fip
+-
+     def create_security_group(self, context, security_group, default_sg=False):
+         LOG.debug("MidonetPluginV2.create_security_group called: "
+                   "security_group=%(security_group)s "
+diff --git a/midonet/neutron/services/l3/__init__.py b/midonet/neutron/services/l3/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/midonet/neutron/services/l3/l3_midonet.py b/midonet/neutron/services/l3/l3_midonet.py
+new file mode 100644
+index 0000000..5d3ee21
+--- /dev/null
++++ b/midonet/neutron/services/l3/l3_midonet.py
+@@ -0,0 +1,184 @@
++# Copyright (C) 2015 Midokura SARL.
++# All Rights Reserved.
++#
++#    Licensed under the Apache License, Version 2.0 (the "License"); you may
++#    not use this file except in compliance with the License. You may obtain
++#    a copy of the License at
++#
++#         http://www.apache.org/licenses/LICENSE-2.0
++#
++#    Unless required by applicable law or agreed to in writing, software
++#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
++#    License for the specific language governing permissions and limitations
++#    under the License.
++
++from midonet.neutron.common import config  # noqa
++from midonet.neutron import extensions
++
++from neutron.api import extensions as neutron_extensions
++from neutron.common import constants as n_const
++from neutron.db import db_base_plugin_v2
++from neutron.db import extraroute_db
++from neutron.db import l3_gwmode_db
++from neutron import i18n
++from neutron.plugins.common import constants
++from oslo_config import cfg
++from oslo_log import helpers as log_helpers
++from oslo_log import log as logging
++from oslo_utils import excutils
++from oslo_utils import importutils
++
++
++LOG = logging.getLogger(__name__)
++_LE = i18n._LE
++_LW = i18n._LW
++
++
++class MidonetL3ServicePlugin(db_base_plugin_v2.NeutronDbPluginV2,
++                             extraroute_db.ExtraRoute_db_mixin,
++                             l3_gwmode_db.L3_NAT_db_mixin):
++
++    """
++    Implements L3 Router service plugin for Midonet.
++    """
++
++    supported_extension_aliases = ["router", "extraroute", "ext-gw-mode"]
++
++    def __init__(self):
++        super(MidonetL3ServicePlugin, self).__init__()
++
++        # Instantiate MidoNet API client
++        self._load_client()
++
++        neutron_extensions.append_api_extensions_path(extensions.__path__)
++
++    def _load_client(self):
++        try:
++            self.client = importutils.import_object(cfg.CONF.MIDONET.client)
++            LOG.debug("Loaded midonet client '%(client)s'",
++                      {'client': self.client})
++        except ImportError:
++            with excutils.save_and_reraise_exception():
++                LOG.exception(_LE("Error loading midonet client '%(client)s'"),
++                              {'client': self.client})
++
++    def get_plugin_type(self):
++        return constants.L3_ROUTER_NAT
++
++    def get_plugin_description(self):
++        """Returns string description of the plugin."""
++        return ("Midonet L3 Router Service Plugin")
++
++    @log_helpers.log_method_call
++    def create_router(self, context, router):
++        with context.session.begin(subtransactions=True):
++            r = super(MidonetL3ServicePlugin, self).create_router(context,
++                                                                  router)
++            self.client.create_router_precommit(context, r)
++
++        try:
++            self.client.create_router_postcommit(r)
++        except Exception as ex:
++            with excutils.save_and_reraise_exception():
++                LOG.error(_LE("Failed to create a router %(r_id)s in Midonet:"
++                              "%(err)s"), {"r_id": r["id"], "err": ex})
++                try:
++                    self.delete_router(context, r['id'])
++                except Exception:
++                    LOG.exception(_LE("Failed to delete a router %s"), r["id"])
++        return r
++
++    @log_helpers.log_method_call
++    def update_router(self, context, id, router):
++        with context.session.begin(subtransactions=True):
++            r = super(MidonetL3ServicePlugin, self).update_router(context, id,
++                                                                  router)
++            self.client.update_router_precommit(context, id, r)
++
++        self.client.update_router_postcommit(id, r)
++        return r
++
++    @log_helpers.log_method_call
++    def delete_router(self, context, id):
++        with context.session.begin(subtransactions=True):
++            super(MidonetL3ServicePlugin, self).delete_router(context, id)
++            self.client.delete_router_precommit(context, id)
++
++        self.client.delete_router_postcommit(id)
++
++    @log_helpers.log_method_call
++    def add_router_interface(self, context, router_id, interface_info):
++        with context.session.begin(subtransactions=True):
++            info = super(MidonetL3ServicePlugin, self).add_router_interface(
++                context, router_id, interface_info)
++            self.client.add_router_interface_precommit(context, router_id,
++                                                       info)
++
++        try:
++            self.client.add_router_interface_postcommit(router_id, info)
++        except Exception as ex:
++            LOG.error(_LE("Failed to create MidoNet resources to add router "
++                          "interface. info=%(info)s, router_id=%(router_id)s, "
++                          "error=%(err)r"),
++                      {"info": info, "router_id": router_id, "err": ex})
++            with excutils.save_and_reraise_exception():
++                self.remove_router_interface(context, router_id, info)
++
++        return info
++
++    @log_helpers.log_method_call
++    def remove_router_interface(self, context, router_id, interface_info):
++        with context.session.begin(subtransactions=True):
++            info = super(MidonetL3ServicePlugin, self).remove_router_interface(
++                context, router_id, interface_info)
++            self.client.remove_router_interface_precommit(context, router_id,
++                                                          info)
++
++        self.client.remove_router_interface_postcommit(router_id, info)
++        return info
++
++    @log_helpers.log_method_call
++    def create_floatingip(self, context, floatingip):
++        with context.session.begin(subtransactions=True):
++            fip = super(MidonetL3ServicePlugin, self).create_floatingip(
++                context, floatingip)
++            self.client.create_floatingip_precommit(context, fip)
++
++        try:
++            self.client.create_floatingip_postcommit(fip)
++        except Exception as ex:
++            with excutils.save_and_reraise_exception():
++                LOG.error(_LE("Failed to create floating ip %(fip)s: %(err)s"),
++                          {"fip": fip, "err": ex})
++                try:
++                    self.delete_floatingip(context, fip['id'])
++                except Exception:
++                    LOG.exception(_LE("Failed to delete a floating ip %s"),
++                                  fip['id'])
++        return fip
++
++    @log_helpers.log_method_call
++    def delete_floatingip(self, context, id):
++        with context.session.begin(subtransactions=True):
++            super(MidonetL3ServicePlugin, self).delete_floatingip(context, id)
++            self.client.delete_floatingip_precommit(context, id)
++
++        self.client.delete_floatingip_postcommit(id)
++
++    @log_helpers.log_method_call
++    def update_floatingip(self, context, id, floatingip):
++        with context.session.begin(subtransactions=True):
++            fip = super(MidonetL3ServicePlugin, self).update_floatingip(
++                context, id, floatingip)
++            self.client.update_floatingip_precommit(context, id, fip)
++
++            # Update status based on association
++            if fip.get('port_id') is None:
++                fip['status'] = n_const.FLOATINGIP_STATUS_DOWN
++            else:
++                fip['status'] = n_const.FLOATINGIP_STATUS_ACTIVE
++            self.update_floatingip_status(context, id, fip['status'])
++
++        self.client.update_floatingip_postcommit(id, fip)
++        return fip

@@ -19,7 +19,7 @@
 Name:           %{pkgname}
 Version:        %{upstream_version}.%{downstream_version}
 Epoch:          1
-Release:        1%{?dist}
+Release:        2%{?dist}
 Provides:       %{pkgname} = %{version}-%{release}
 Summary:        %{vendor} OpenStack Neutron driver
 
@@ -27,6 +27,15 @@ Group:          Applications/System
 License:        ASL 2.0
 URL:            https://github.com/openstack/%{srcname}
 Source0:        http://tarballs.openstack.org/%{srcname}/%{srcname}-stable-kilo.tar.gz
+Patch0:         0001-port-security.patch
+Patch1:         0002-ml2-mech-driver-stub.patch
+Patch2:         0003-l3-service.patch
+Patch3:         0004-rem-dup-load-client.patch
+Patch4:         0005-ml2-mech-type-driver.patch
+Patch5:         0006-ml2-filter-mido-net-type.patch
+Patch6:         0007-ml2-move-to-util.patch
+Patch7:         0008-ext-gw-mode.patch
+Patch8:         0009-fix-upd-hm-log.patch
 
 BuildArch:      noarch
 BuildRoot:      %{_topdir}/BUILDROOT/
@@ -40,6 +49,15 @@ This package provides %{vendor} networking driver for OpenStack Neutron
 
 %prep
 %setup -q -n %{srcname}-%{upstream_version}
+%patch0 -p1
+%patch1 -p1
+%patch2 -p1
+%patch3 -p1
+%patch4 -p1
+%patch5 -p1
+%patch6 -p1
+%patch7 -p1
+%patch8 -p1
 
 %build
 %{__python2} setup.py build

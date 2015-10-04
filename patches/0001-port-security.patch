@@ -1,0 +1,124 @@
+commit 012fa9d0712c6e471c62858fcc7aee01e63cb54f
+Author: Joe Mills <joe@midokura.com>
+Date:   Tue Jun 23 09:04:11 2015 +0000
+
+    Add port-security extension support
+    
+    This patch enables the port-security neutron extension in midonet.
+    It also adds the changes required for the port-security database
+    management.
+    
+    This neutron extension adds a new field to the PORT object:
+    port_security_enabled. This field is a boolean which will
+    have the following effects on a port depending on its value:
+    
+    TRUE: Allow the creation of anti-spoof protection (including
+    allowed-address-pairs) and security groups on this port.
+    
+    FALSE: Block the creation of allowed address pairs and
+    security groups on this port, and do not create any
+    anti-spoof protection for this port. Setting
+    port_security_enabled to False will fail if there are
+    security groups or allowed address pairs associated with
+    the port. Also, associating security groups or allowed
+    address groups with a port will fail if port_security_enabled
+    is set to false.
+    
+    Change-Id: I49ace9cc437601353d6a90f8d6eca8a20ebf3dc6
+    Signed-off-by: Joe Mills <joe@midokura.com>
+
+diff --git a/midonet/neutron/plugin_v2.py b/midonet/neutron/plugin_v2.py
+index 11c3a43..eee4cef 100644
+--- a/midonet/neutron/plugin_v2.py
++++ b/midonet/neutron/plugin_v2.py
+@@ -21,8 +21,10 @@ from neutron.common import constants as n_const
+ from neutron.common import exceptions as n_exc
+ from neutron.db import allowedaddresspairs_db as addr_pair_db
+ from neutron.db import extraroute_db
++from neutron.db import portsecurity_db as ps_db
+ from neutron.extensions import allowedaddresspairs as addr_pair
+ from neutron.extensions import extra_dhcp_opt as edo_ext
++from neutron.extensions import portsecurity as psec
+ from neutron.extensions import providernet as pnet
+ from neutron.extensions import securitygroup as ext_sg
+ from neutron import i18n
+@@ -42,7 +44,8 @@ class MidonetPluginV2(plugin.MidonetMixinBase,
+                       am_db.AgentMembershipDbMixin,
+                       extraroute_db.ExtraRoute_db_mixin,
+                       pnet_db.MidonetProviderNetworkMixin,
+-                      pb_db.MidonetPortBindingMixin):
++                      pb_db.MidonetPortBindingMixin,
++                      ps_db.PortSecurityDbMixin):
+ 
+     supported_extension_aliases = [
+         'agent',
+@@ -53,6 +56,7 @@ class MidonetPluginV2(plugin.MidonetMixinBase,
+         'external-net',
+         'extra_dhcp_opt',
+         'extraroute',
++        'port-security',
+         'provider',
+         'quotas',
+         'router',
+@@ -79,6 +83,9 @@ class MidonetPluginV2(plugin.MidonetMixinBase,
+             self._process_l3_create(context, net, net_data)
+             self._create_provider_network(context, net_data)
+             self._extend_provider_network_dict(context, net)
++            if psec.PORTSECURITY in net_data:
++                self._process_network_port_security_create(context, net_data,
++                                                           net)
+             self.client.create_network_precommit(context, net)
+ 
+         try:
+@@ -137,6 +144,10 @@ class MidonetPluginV2(plugin.MidonetMixinBase,
+                 context, id, network)
+             self._process_l3_update(context, net, network['network'])
+             self._extend_provider_network_dict(context, net)
++            if psec.PORTSECURITY in network['network']:
++                self._process_network_port_security_update(context,
++                                                           network['network'],
++                                                           net)
+             self.client.update_network_precommit(context, id, net)
+ 
+         self.client.update_network_postcommit(id, net)
+@@ -238,8 +249,22 @@ class MidonetPluginV2(plugin.MidonetMixinBase,
+             # Update fields
+             port_data.update(new_port)
+ 
+-            # Bind security groups to the port
+-            self._ensure_default_security_group_on_port(context, port)
++            port_psec, has_ip = self._determine_port_security_and_has_ip(
++                context, port['port'])
++            port['port'][psec.PORTSECURITY] = port_psec
++            self._process_port_port_security_create(context,
++                                                    port['port'],
++                                                    new_port)
++
++            if port_psec is False:
++                if self._check_update_has_security_groups(port):
++                    raise psec.PortSecurityAndIPRequiredForSecurityGroups()
++                if self._check_update_has_allowed_address_pairs(port):
++                    raise addr_pair.AddressPairAndPortSecurityRequired()
++            else:
++                # Bind security groups to the port
++                self._ensure_default_security_group_on_port(context, port)
++
+             sg_ids = self._get_security_groups_on_port(context, port)
+             self._process_port_create_security_group(context, new_port, sg_ids)
+ 
+@@ -323,6 +348,15 @@ class MidonetPluginV2(plugin.MidonetMixinBase,
+             self.update_address_pairs_on_port(context, id, port,
+                                               original_port, p)
+ 
++            self._process_port_port_security_update(context, port['port'], p)
++
++            port_psec = p.get(psec.PORTSECURITY)
++            if port_psec is False:
++                if p.get(ext_sg.SECURITYGROUPS):
++                    raise psec.PortSecurityPortHasSecurityGroup()
++                if p.get(addr_pair.ADDRESS_PAIRS):
++                    raise addr_pair.AddressPairAndPortSecurityRequired()
++
+             self.client.update_port_precommit(context, id, p)
+ 
+         self.client.update_port_postcommit(id, p)

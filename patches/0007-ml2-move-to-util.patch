@@ -1,0 +1,280 @@
+commit dca3fd2ef82f30c3f84bdd10b2c7882246b1275e
+Author: Ryu Ishimoto <ryu@midokura.com>
+Date:   Wed Aug 12 08:28:29 2015 +0000
+
+    Move ML2 util methods from common util
+    
+    Some methods in the common util module contains methods specific to
+    ML2.  Move them to a separate ML2 util module for better organization.
+    
+    Also, instead of definiing multiple filter decorators to handle
+    different resource types, define one and let it figure out the network
+    type within it based on the mechanism context object type passed in.
+    
+    Change-Id: Ie92cf516c090e2432a9b0fe5e95e2611474674f9
+    Signed-off-by: Ryu Ishimoto <ryu@midokura.com>
+
+diff --git a/midonet/neutron/common/util.py b/midonet/neutron/common/util.py
+index 700fe92..b856727 100644
+--- a/midonet/neutron/common/util.py
++++ b/midonet/neutron/common/util.py
+@@ -13,16 +13,12 @@
+ #    License for the specific language governing permissions and limitations
+ #    under the License.
+ 
+-import functools
+-
+ import time
+ from webob import exc as w_exc
+ 
+-from midonet.neutron.common import constants as const
+ from midonet.neutron.common import exceptions as exc
+ from midonetclient import exc as mn_exc
+ 
+-from neutron.extensions import providernet
+ from neutron import i18n
+ from oslo_log import log as logging
+ 
+@@ -69,38 +65,3 @@ def retry_on_error(attempts, delay, error_cls):
+             raise err
+         return retry
+     return internal_wrapper
+-
+-
+-def is_midonet_network(network):
+-    return network.get(providernet.NETWORK_TYPE) == const.TYPE_MIDONET
+-
+-
+-def filter_network(context):
+-    return is_midonet_network(context.current)
+-
+-
+-def filter_subnet(context):
+-    # REVISIT(joe): implement this filtering using upstream neutron info
+-    # after the subnet context has the network information
+-    netid = context.current['network_id']
+-    network = context._plugin.get_network(context._plugin_context, netid)
+-    return is_midonet_network(network)
+-
+-
+-def filter_port(context):
+-    return is_midonet_network(context.network.current)
+-
+-
+-def midonet_filter(filter_func):
+-    def filter_resource(func):
+-        @functools.wraps(func)
+-        def wrapper(self, context):
+-            if filter_func(context):
+-                func(self, context)
+-        return wrapper
+-    return filter_resource
+-
+-
+-midonet_network_filter = midonet_filter(filter_network)
+-midonet_subnet_filter = midonet_filter(filter_subnet)
+-midonet_port_filter = midonet_filter(filter_port)
+diff --git a/midonet/neutron/ml2/mech_driver.py b/midonet/neutron/ml2/mech_driver.py
+index cb22c69..f4f5325 100644
+--- a/midonet/neutron/ml2/mech_driver.py
++++ b/midonet/neutron/ml2/mech_driver.py
+@@ -18,8 +18,8 @@ from neutron.common import constants
+ from midonet.neutron.client import base as c_base
+ from midonet.neutron.common import config  # noqa
+ from midonet.neutron.common import constants as const
+-from midonet.neutron.common import util
+ from midonet.neutron.ml2 import sg_callback
++from midonet.neutron.ml2 import util as m_util
+ 
+ from neutron.common import constants as n_const
+ from neutron.common import exceptions as n_exc
+@@ -50,79 +50,79 @@ class MidonetMechanismDriver(api.MechanismDriver):
+         self.sec_handler = sg_callback.MidonetSecurityGroupsHandler(
+             self.client)
+ 
+-    @util.midonet_network_filter
++    @m_util.filter_midonet_network
+     @log_helpers.log_method_call
+     def create_network_precommit(self, context):
+         network = context.current
+         self.client.create_network_precommit(context, network)
+ 
+-    @util.midonet_network_filter
++    @m_util.filter_midonet_network
+     @log_helpers.log_method_call
+     def create_network_postcommit(self, context):
+         network = context.current
+         self.client.create_network_postcommit(network)
+ 
+-    @util.midonet_network_filter
++    @m_util.filter_midonet_network
+     @log_helpers.log_method_call
+     def update_network_precommit(self, context):
+         net = context.current
+         self.client.update_network_precommit(context, net['id'], net)
+ 
+-    @util.midonet_network_filter
++    @m_util.filter_midonet_network
+     @log_helpers.log_method_call
+     def update_network_postcommit(self, context):
+         net = context.current
+         self.client.update_network_postcommit(net['id'], net)
+ 
+-    @util.midonet_network_filter
++    @m_util.filter_midonet_network
+     @log_helpers.log_method_call
+     def delete_network_precommit(self, context):
+         network_id = context.current['id']
+         self.client.delete_network_precommit(context, network_id)
+ 
+-    @util.midonet_network_filter
++    @m_util.filter_midonet_network
+     @log_helpers.log_method_call
+     def delete_network_postcommit(self, context):
+         network_id = context.current['id']
+         self.client.delete_network_postcommit(network_id)
+ 
+-    @util.midonet_subnet_filter
++    @m_util.filter_midonet_network
+     @log_helpers.log_method_call
+     def create_subnet_precommit(self, context):
+         subnet = context.current
+         self.client.create_subnet_precommit(context, subnet)
+ 
+-    @util.midonet_subnet_filter
++    @m_util.filter_midonet_network
+     @log_helpers.log_method_call
+     def create_subnet_postcommit(self, context):
+         subnet = context.current
+         self.client.create_subnet_postcommit(subnet)
+ 
+-    @util.midonet_subnet_filter
++    @m_util.filter_midonet_network
+     @log_helpers.log_method_call
+     def update_subnet_precommit(self, context):
+         subnet = context.current
+         self.client.update_subnet_precommit(context, subnet['id'], subnet)
+ 
+-    @util.midonet_subnet_filter
++    @m_util.filter_midonet_network
+     @log_helpers.log_method_call
+     def update_subnet_postcommit(self, context):
+         subnet = context.current
+         self.client.update_subnet_postcommit(subnet['id'], subnet)
+ 
+-    @util.midonet_subnet_filter
++    @m_util.filter_midonet_network
+     @log_helpers.log_method_call
+     def delete_subnet_precommit(self, context):
+         subnet_id = context.current['id']
+         self.client.delete_subnet_precommit(context, subnet_id)
+ 
+-    @util.midonet_subnet_filter
++    @m_util.filter_midonet_network
+     @log_helpers.log_method_call
+     def delete_subnet_postcommit(self, context):
+         subnet_id = context.current['id']
+         self.client.delete_subnet_postcommit(subnet_id)
+ 
+-    @util.midonet_port_filter
++    @m_util.filter_midonet_network
+     @log_helpers.log_method_call
+     def create_port_precommit(self, context):
+         port = context.current
+@@ -130,37 +130,37 @@ class MidonetMechanismDriver(api.MechanismDriver):
+ 
+     def _validate_port_create(self, port):
+         if (port.get('device_owner') == n_const.DEVICE_OWNER_ROUTER_GW
+-            and not port['fixed_ips']):
++                and not port['fixed_ips']):
+             msg = (_("No IPs assigned to the gateway port for"
+                      " router %s") % port['device_id'])
+             raise n_exc.BadRequest(resource='router', msg=msg)
+ 
+-    @util.midonet_port_filter
++    @m_util.filter_midonet_network
+     @log_helpers.log_method_call
+     def create_port_postcommit(self, context):
+         port = context.current
+         self._validate_port_create(port)
+         self.client.create_port_postcommit(port)
+ 
+-    @util.midonet_port_filter
++    @m_util.filter_midonet_network
+     @log_helpers.log_method_call
+     def update_port_precommit(self, context):
+         port = context.current
+         self.client.update_port_precommit(context, port['id'], port)
+ 
+-    @util.midonet_port_filter
++    @m_util.filter_midonet_network
+     @log_helpers.log_method_call
+     def update_port_postcommit(self, context):
+         port = context.current
+         self.client.update_port_postcommit(port['id'], port)
+ 
+-    @util.midonet_port_filter
++    @m_util.filter_midonet_network
+     @log_helpers.log_method_call
+     def delete_port_precommit(self, context):
+         port_id = context.current['id']
+         self.client.delete_port_precommit(context, port_id)
+ 
+-    @util.midonet_port_filter
++    @m_util.filter_midonet_network
+     @log_helpers.log_method_call
+     def delete_port_postcommit(self, context):
+         port_id = context.current['id']
+diff --git a/midonet/neutron/ml2/util.py b/midonet/neutron/ml2/util.py
+new file mode 100644
+index 0000000..d9dcfbc
+--- /dev/null
++++ b/midonet/neutron/ml2/util.py
+@@ -0,0 +1,47 @@
++# Copyright (C) 2015 Midokura SARL.
++# All Rights Reserved.
++#
++#    Licensed under the Apache License, Version 2.0 (the "License"); you may
++#    not use this file except in compliance with the License. You may obtain
++#    a copy of the License at
++#
++#         http://www.apache.org/licenses/LICENSE-2.0
++#
++#    Unless required by applicable law or agreed to in writing, software
++#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
++#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
++#    License for the specific language governing permissions and limitations
++#    under the License.
++
++import functools
++
++from midonet.neutron.common import constants as const
++from neutron.extensions import providernet
++from neutron.plugins.ml2 import driver_context as ctx
++
++
++def is_midonet_network(context):
++    """Checks whether the context is mech driver context for MidoNet driver """
++
++    if isinstance(context, ctx.NetworkContext):
++        net = context.current
++    elif isinstance(context, ctx.PortContext):
++        net = context.network.current
++    elif isinstance(context, ctx.SubnetContext):
++        # REVISIT(joe): implement this filtering using upstream neutron info
++        # after the subnet context has the network information
++        net = context._plugin.get_network(context._plugin_context,
++                                          context.current['network_id'])
++    else:
++        raise ValueError("Invalid Mechanism driver context passed in.")
++
++    return net.get(providernet.NETWORK_TYPE) == const.TYPE_MIDONET
++
++
++def filter_midonet_network(func):
++    """Decorator to filter out only the midonet network type"""
++    @functools.wraps(func)
++    def wrapper(self, context):
++        if is_midonet_network(context):
++            func(self, context)
++    return wrapper

@@ -1,0 +1,26 @@
+commit 1107a43c5edeb130282a7b9f5558799d568d8e66
+Author: Ryu Ishimoto <ryu@midokura.com>
+Date:   Wed Aug 19 13:43:16 2015 +0000
+
+    Add missing 'ext-gw-mode' extension to v1
+    
+    Even though MiodNet plugin v1 supported 'ext-gw-mode', it was never
+    declared properly in supported extension list.
+    
+    Closes-Bug:  #1485156
+    
+    Change-Id: I8f9d8bd3a734d2193dc82cc38f47151c82e62a6f
+
+diff --git a/midonet/neutron/plugin.py b/midonet/neutron/plugin.py
+index 3334080..35c200b 100644
+--- a/midonet/neutron/plugin.py
++++ b/midonet/neutron/plugin.py
+@@ -92,7 +92,7 @@ class MidonetMixinBase(db_base_plugin_v2.NeutronDbPluginV2,
+ class MidonetMixin(MidonetMixinBase,
+                    l3_gwmode_db.L3_NAT_db_mixin):
+ 
+-    supported_extension_aliases = ['extra_dhcp_opt']
++    supported_extension_aliases = ['ext-gw-mode', 'extra_dhcp_opt']
+ 
+     def create_network(self, context, network):
+         LOG.debug('MidonetMixin.create_network called: network=%r', network)
