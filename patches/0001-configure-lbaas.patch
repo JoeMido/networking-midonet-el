@@ -1,0 +1,48 @@
+commit 50b064a68b0a99743967bfc27b1f32bd2afecb76
+Author: Joe Mills <joe@midokura.com>
+Date:   Wed Oct 7 14:24:10 2015 +0900
+
+    Add config to make lbaas ext configurable
+    
+    This patch allows the user to configure the midonet neutron plugin
+    to support or not support the lbaas extension. This allows the
+    user to use a different lbaas driver.
+
+diff --git a/midonet/neutron/common/config.py b/midonet/neutron/common/config.py
+index d89c0e8..f4395bc 100644
+--- a/midonet/neutron/common/config.py
++++ b/midonet/neutron/common/config.py
+@@ -18,6 +18,8 @@
+ from oslo.config import cfg
+ 
+ midonet_opts = [
++    cfg.BoolOpt('enable_lb', default=True,
++               help=_('setting to false will disable Midonet LBaaS support')),
+     cfg.StrOpt('midonet_uri', default='http://localhost:8080/midonet-api',
+                help=_('MidoNet API server URI.')),
+     cfg.StrOpt('username', default='admin',
+diff --git a/midonet/neutron/plugin.py b/midonet/neutron/plugin.py
+index 0bad1a0..2b9db14 100644
+--- a/midonet/neutron/plugin.py
++++ b/midonet/neutron/plugin.py
+@@ -53,6 +53,10 @@ from neutron.plugins.common import constants
+ 
+ LOG = logging.getLogger(__name__)
+ 
++configurable_ext = []
++if cfg.CONF.MIDONET.enable_lb:
++    configurable_ext = ['lbaas']
++
+ 
+ class MidonetPluginV2(db_base_plugin_v2.NeutronDbPluginV2,
+                       portbindings_db.PortBindingMixin,
+@@ -72,8 +76,7 @@ class MidonetPluginV2(db_base_plugin_v2.NeutronDbPluginV2,
+                                    'router',
+                                    'quotas',
+                                    'security-group',
+-                                   'routed-service-insertion',
+-                                   'lbaas']
++                                   'routed-service-insertion'] + configurable_ext
+     __native_bulk_support = True
+ 
+     def __init__(self):

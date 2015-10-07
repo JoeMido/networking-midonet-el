@@ -19,7 +19,7 @@
 Name:           %{pkgname}
 Version:        %{upstream_version}.%{downstream_version}
 Epoch:          1
-Release:        1%{?dist}
+Release:        2%{?dist}
 Provides:       %{pkgname} = %{version}-%{release}
 Summary:        %{vendor} OpenStack Neutron driver
 
@@ -27,6 +27,7 @@ Group:          Applications/System
 License:        ASL 2.0
 URL:            https://github.com/openstack/%{srcname}
 Source0:        http://tarballs.openstack.org/%{srcname}/%{srcname}-stable-juno.tar.gz
+Patch0:         0001-configure-lbaas.patch
 
 BuildArch:      noarch
 BuildRoot:      %{_topdir}/BUILDROOT/
@@ -40,6 +41,7 @@ This package provides %{vendor} networking driver for OpenStack Neutron
 
 %prep
 %setup -q -n %{srcname}-2014.2.2.1.0
+%patch0 -p1
 
 %build
 %{__python2} setup.py build
